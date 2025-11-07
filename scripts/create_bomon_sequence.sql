@@ -1,0 +1,20 @@
+-- Create sequence for BOMON table
+CREATE SEQUENCE SEQ_BOMON
+    START WITH 1
+    INCREMENT BY 1
+    NOCACHE
+    NOCYCLE;
+
+-- Create trigger to auto-generate MABM
+CREATE OR REPLACE TRIGGER TRG_BOMON_MABM
+    BEFORE INSERT ON BOMON
+    FOR EACH ROW
+BEGIN
+    IF :NEW.MABM IS NULL THEN
+        :NEW.MABM := 'BM' || LPAD(SEQ_BOMON.NEXTVAL, 3, '0');
+    END IF;
+END;
+/
+
+-- Grant permissions
+GRANT SELECT ON SEQ_BOMON TO PUBLIC;
