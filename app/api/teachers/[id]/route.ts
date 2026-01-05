@@ -1,37 +1,121 @@
 /**
  * API Routes for Individual Teacher Operations
+ * Sử dụng Oracle Stored Procedures
  *
- * This module handles HTTP requests for specific teacher operations:
- * - PUT /api/teachers/[id]: Update an existing teacher
- * - DELETE /api/teachers/[id]: Delete a teacher
+ * - GET /api/teachers/[id]: Lấy thông tin GV từ V_GIAOVIEN_CHITIET
+ * - PUT /api/teachers/[id]: Cập nhật GV qua PKG_GIAOVIEN.SP_SUA
+ * - DELETE /api/teachers/[id]: Xóa GV qua PKG_GIAOVIEN.SP_XOA
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import oracledb from 'oracledb';
-import { executeQuery } from '@/lib/oracle';
+import { executeQuery, executeProcedure } from '@/lib/oracle';
 
 /**
- * Teacher type definition
+ * Interface cho dữ liệu từ V_GIAOVIEN_CHITIET
  */
-interface Teacher {
+interface TeacherView {
   MAGV: string;
   HOTEN: string;
-  NGAYSINH?: Date;
-  GIOITINH?: number;
-  QUEQUAN?: string;
-  DIACHI?: string;
-  SDT?: number;
-  EMAIL: string;
-  MABM?: string;
+  NGAYSINH: Date | null;
+  GIOITINH: number | null;
+  GIOITINH_TEXT: string;
+  TUOI: number | null;
+  QUEQUAN: string | null;
+  DIACHI: string | null;
+  SDT: number | null;
+  EMAIL: string | null;
+  MABM: string | null;
+  TENBM: string | null;
+  MAKHOA: string | null;
+  TENKHOA: string | null;
+  MAHOCVI: string | null;
+  TENHOCVI: string | null;
+  MAHOCHAM: string | null;
+  TENHOCHAM: string | null;
+  MACHUCVU: string | null;
+  TENCHUCVU: string | null;
+}
+
+/**
+ * GET /api/teachers/[id]
+ * Lấy thông tin chi tiết giáo viên từ V_GIAOVIEN_CHITIET
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: maGV } = await params;
+
+    const result = await executeQuery<TeacherView>(
+      `SELECT * FROM V_GIAOVIEN_CHITIET WHERE TRIM(MAGV) = TRIM(:maGV)`,
+      { maGV },
+      {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+        fetchInfo: {
+          "HOTEN": { type: oracledb.STRING },
+          "QUEQUAN": { type: oracledb.STRING },
+          "DIACHI": { type: oracledb.STRING },
+          "EMAIL": { type: oracledb.STRING },
+          "TENBM": { type: oracledb.STRING },
+          "TENKHOA": { type: oracledb.STRING },
+          "TENHOCVI": { type: oracledb.STRING },
+          "TENHOCHAM": { type: oracledb.STRING },
+          "TENCHUCVU": { type: oracledb.STRING },
+          "GIOITINH_TEXT": { type: oracledb.STRING }
+        }
+      }
+    );
+
+    if (!result.rows || result.rows.length === 0) {
+      return NextResponse.json(
+        { error: 'Không tìm thấy giáo viên' },
+        { status: 404 }
+      );
+    }
+
+    const t = result.rows[0];
+    const teacher = {
+      maGV: t.MAGV?.trim(),
+      hoTen: t.HOTEN || '',
+      ngaySinh: t.NGAYSINH,
+      gioiTinh: t.GIOITINH,
+      gioiTinhText: t.GIOITINH_TEXT || '',
+      tuoi: t.TUOI,
+      queQuan: t.QUEQUAN || '',
+      diaChi: t.DIACHI || '',
+      sdt: t.SDT,
+      email: t.EMAIL || '',
+      maBM: t.MABM?.trim() || '',
+      tenBM: t.TENBM || '',
+      maKhoa: t.MAKHOA?.trim() || '',
+      tenKhoa: t.TENKHOA || '',
+      maHocVi: t.MAHOCVI?.trim() || '',
+      tenHocVi: t.TENHOCVI || '',
+      maHocHam: t.MAHOCHAM?.trim() || '',
+      tenHocHam: t.TENHOCHAM || '',
+      maChucVu: t.MACHUCVU?.trim() || '',
+      tenChucVu: t.TENCHUCVU || ''
+    };
+
+    return NextResponse.json(teacher, { status: 200 });
+  } catch (error) {
+    console.error('Error fetching teacher:', error);
+    return NextResponse.json(
+      {
+        error: 'Không thể lấy thông tin giáo viên',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
+      },
+      { status: 500 }
+    );
+  }
 }
 
 /**
  * PUT /api/teachers/[id]
- * Update an existing teacher in the database
- *
- * @param request - Next.js request object containing updated teacher data
- * @param context - Route context containing the teacher ID parameter
- * @returns JSON response with update status
+ * Cập nhật giáo viên qua PKG_GIAOVIEN.SP_SUA
+ * Logic validation hoàn toàn trong Oracle SP
  */
 export async function PUT(
   request: NextRequest,
@@ -39,96 +123,55 @@ export async function PUT(
 ) {
   try {
     const { id: maGV } = await params;
-
-    // Parse request body
     const body = await request.json();
     const { hoTen, ngaySinh, gioiTinh, queQuan, diaChi, sdt, email, maBM } = body;
 
-    // Validate required fields
-    if (!hoTen) {
+    // Gọi Stored Procedure PKG_GIAOVIEN.SP_SUA
+    const result = await executeProcedure('PKG_GIAOVIEN.SP_SUA', {
+      p_magv: { val: maGV, type: oracledb.STRING, dir: oracledb.BIND_IN },
+      p_hoten: { val: hoTen || null, type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_IN },
+      p_ngaysinh: { val: ngaySinh ? new Date(ngaySinh) : null, type: oracledb.DATE, dir: oracledb.BIND_IN },
+      p_gioitinh: { val: gioiTinh ?? null, type: oracledb.NUMBER, dir: oracledb.BIND_IN },
+      p_quequan: { val: queQuan || null, type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_IN },
+      p_diachi: { val: diaChi || null, type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_IN },
+      p_sdt: { val: sdt || null, type: oracledb.NUMBER, dir: oracledb.BIND_IN },
+      p_email: { val: email || null, type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_IN },
+      p_mabm: { val: maBM || null, type: oracledb.STRING, dir: oracledb.BIND_IN },
+      p_status: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT },
+      p_message: { type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_OUT, maxSize: 500 }
+    });
+
+    const outBinds = result.outBinds as {
+      p_status: number;
+      p_message: string;
+    };
+
+    // Kiểm tra kết quả từ Oracle
+    if (outBinds.p_status !== 1) {
+      let httpStatus = 400;
+      if (outBinds.p_status === -2) httpStatus = 404; // GV không tồn tại
+      if (outBinds.p_status === -3) httpStatus = 400; // Bộ môn không tồn tại
+      if (outBinds.p_status === -5) httpStatus = 409; // Email đã tồn tại
+      if (outBinds.p_status === -99) httpStatus = 500; // Lỗi hệ thống
+
       return NextResponse.json(
-        { error: 'Thiếu thông tin bắt buộc: hoTen là bắt buộc' },
-        { status: 400 }
-      );
-    }
-
-    // Validate email format if provided
-    if (email) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
-        return NextResponse.json(
-          { error: 'Định dạng email không hợp lệ' },
-          { status: 400 }
-        );
-      }
-    }
-
-    // Check if teacher exists (using TRIM to handle whitespace)
-    const checkResult = await executeQuery<Teacher>(
-      `SELECT MAGV FROM GIAOVIEN WHERE TRIM(MAGV) = TRIM(:maGV)`,
-      { maGV },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    if (!checkResult.rows || checkResult.rows.length === 0) {
-      return NextResponse.json(
-        { error: 'Không tìm thấy giáo viên' },
-        { status: 404 }
-      );
-    }
-
-    // Update teacher in database (using TRIM to handle whitespace)
-    // Use DB_TYPE_NVARCHAR for Vietnamese text fields to ensure proper encoding
-    const updateResult = await executeQuery(
-      `UPDATE GIAOVIEN
-       SET HOTEN = :hoTen,
-           NGAYSINH = TO_DATE(:ngaySinh, 'YYYY-MM-DD'),
-           GIOITINH = :gioiTinh,
-           QUEQUAN = :queQuan,
-           DIACHI = :diaChi,
-           SDT = :sdt,
-           EMAIL = :email,
-           MABM = :maBM
-       WHERE TRIM(MAGV) = TRIM(:maGV)`,
-      {
-        maGV: { val: maGV, type: oracledb.STRING },
-        hoTen: { val: hoTen, type: oracledb.DB_TYPE_NVARCHAR },
-        ngaySinh: ngaySinh || null,
-        gioiTinh: gioiTinh || null,
-        queQuan: { val: queQuan || null, type: oracledb.DB_TYPE_NVARCHAR },
-        diaChi: { val: diaChi || null, type: oracledb.DB_TYPE_NVARCHAR },
-        sdt: sdt || null,
-        email: { val: email || null, type: oracledb.DB_TYPE_NVARCHAR },
-        maBM: { val: maBM || null, type: oracledb.STRING }
-      }
-    );
-
-    // Check if any rows were affected
-    if (updateResult.rowsAffected === 0) {
-      return NextResponse.json(
-        { error: 'Không thể cập nhật giáo viên' },
-        { status: 500 }
+        {
+          error: outBinds.p_message,
+          status: outBinds.p_status
+        },
+        { status: httpStatus }
       );
     }
 
     return NextResponse.json(
       {
-        message: 'Cập nhật giáo viên thành công',
+        message: outBinds.p_message,
         maGV: maGV
       },
       { status: 200 }
     );
   } catch (error) {
     console.error('Error updating teacher:', error);
-
-    // Check for unique constraint violation
-    if (error instanceof Error && error.message.includes('ORA-00001')) {
-      return NextResponse.json(
-        { error: 'Mã giáo viên đã tồn tại' },
-        { status: 409 }
-      );
-    }
-
     return NextResponse.json(
       {
         error: 'Không thể cập nhật giáo viên',
@@ -141,11 +184,8 @@ export async function PUT(
 
 /**
  * DELETE /api/teachers/[id]
- * Delete a teacher from the database
- *
- * @param request - Next.js request object
- * @param context - Route context containing the teacher ID parameter
- * @returns JSON response with deletion status
+ * Xóa giáo viên qua PKG_GIAOVIEN.SP_XOA
+ * Logic kiểm tra ràng buộc trong Oracle SP
  */
 export async function DELETE(
   request: NextRequest,
@@ -154,44 +194,43 @@ export async function DELETE(
   try {
     const { id: maGV } = await params;
 
-    // Check if teacher exists (using TRIM to handle whitespace)
-    const checkResult = await executeQuery<Teacher>(
-      `SELECT MAGV FROM GIAOVIEN WHERE TRIM(MAGV) = TRIM(:maGV)`,
-      { maGV },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    // Gọi Stored Procedure PKG_GIAOVIEN.SP_XOA
+    const result = await executeProcedure('PKG_GIAOVIEN.SP_XOA', {
+      p_magv: { val: maGV, type: oracledb.STRING, dir: oracledb.BIND_IN },
+      p_status: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT },
+      p_message: { type: oracledb.DB_TYPE_NVARCHAR, dir: oracledb.BIND_OUT, maxSize: 500 }
+    });
 
-    if (!checkResult.rows || checkResult.rows.length === 0) {
+    const outBinds = result.outBinds as {
+      p_status: number;
+      p_message: string;
+    };
+
+    // Kiểm tra kết quả từ Oracle
+    if (outBinds.p_status !== 1) {
+      let httpStatus = 400;
+      if (outBinds.p_status === -2) httpStatus = 404; // GV không tồn tại
+      if (outBinds.p_status === -3 || outBinds.p_status === -4) httpStatus = 409; // GV đang là chủ nhiệm
+      if (outBinds.p_status === -99) httpStatus = 500; // Lỗi hệ thống
+
       return NextResponse.json(
-        { error: 'Không tìm thấy giáo viên' },
-        { status: 404 }
-      );
-    }
-
-    // Delete teacher from database (using TRIM to handle whitespace)
-    const deleteResult = await executeQuery(
-      `DELETE FROM GIAOVIEN WHERE TRIM(MAGV) = TRIM(:maGV)`,
-      { maGV }
-    );
-
-    // Check if any rows were affected
-    if (deleteResult.rowsAffected === 0) {
-      return NextResponse.json(
-        { error: 'Không thể xóa giáo viên' },
-        { status: 500 }
+        {
+          error: outBinds.p_message,
+          status: outBinds.p_status
+        },
+        { status: httpStatus }
       );
     }
 
     return NextResponse.json(
       {
-        message: 'Xóa giáo viên thành công',
+        message: outBinds.p_message,
         maGV: maGV
       },
       { status: 200 }
     );
   } catch (error) {
     console.error('Error deleting teacher:', error);
-
     return NextResponse.json(
       {
         error: 'Không thể xóa giáo viên',

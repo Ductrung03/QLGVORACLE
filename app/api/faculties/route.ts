@@ -1,47 +1,53 @@
 /**
  * API Routes for Faculty Management (Quản lý Khoa)
+ * Sử dụng Oracle Package PKG_KHOA
  *
- * GET /api/faculties: Retrieve all faculties
- * POST /api/faculties: Create a new faculty
+ * GET /api/faculties: Lấy danh sách khoa từ PKG_KHOA.SP_LAYDS
+ * POST /api/faculties: Tạo khoa mới qua PKG_KHOA.SP_THEM
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { executeQuery } from '@/lib/oracle';
+import { executeProcedureWithCursor, executeProcedureFull } from '@/lib/oracle';
 import oracledb from 'oracledb';
 
-interface Faculty {
+/**
+ * Interface cho dữ liệu từ V_KHOA_THONGKE
+ */
+interface FacultyView {
   MAKHOA: string;
   TENKHOA: string;
-  DIACHI?: string;
-  MACHUNHIEMKHOA?: string;
+  DIACHI: string | null;
+  MACHUNHIEMKHOA: string | null;
+  HOTEN_CHUNHIEM: string | null;
+  SO_BOMON: number;
+  SO_GIAOVIEN: number;
+  SO_GV_CO_HOCHAM: number;
+  SO_TIENSI: number;
 }
 
 /**
  * GET /api/faculties
- * Retrieve all faculties from the database
+ * Lấy danh sách khoa từ PKG_KHOA.SP_LAYDS
  */
 export async function GET() {
   try {
-    const result = await executeQuery<Faculty>(
-      `SELECT
-        K.MAKHOA,
-        K.TENKHOA,
-        K.DIACHI,
-        K.MACHUNHIEMKHOA,
-        GV.HOTEN as TENCHUNHIEM
-      FROM KHOA K
-      LEFT JOIN GIAOVIEN GV ON K.MACHUNHIEMKHOA = GV.MAGV
-      ORDER BY K.MAKHOA`,
+    // Gọi PKG_KHOA.SP_LAYDS để lấy danh sách khoa
+    const rows = await executeProcedureWithCursor<FacultyView>(
+      'PKG_KHOA.SP_LAYDS',
       {},
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      'p_cursor'
     );
 
-    const faculties = (result.rows || []).map((faculty: any) => ({
+    const faculties = rows.map((faculty) => ({
       maKhoa: faculty.MAKHOA?.trim(),
       tenKhoa: faculty.TENKHOA || '',
       diaChi: faculty.DIACHI || '',
       maChuNhiemKhoa: faculty.MACHUNHIEMKHOA?.trim() || '',
-      tenChuNhiem: faculty.TENCHUNHIEM || ''
+      tenChuNhiem: faculty.HOTEN_CHUNHIEM || '',
+      soBoMon: faculty.SO_BOMON || 0,
+      soGiaoVien: faculty.SO_GIAOVIEN || 0,
+      soGVCoHocHam: faculty.SO_GV_CO_HOCHAM || 0,
+      soTienSi: faculty.SO_TIENSI || 0
     }));
 
     return NextResponse.json(faculties, { status: 200 });
@@ -49,8 +55,8 @@ export async function GET() {
     console.error('Error fetching faculties:', error);
     return NextResponse.json(
       {
-        error: 'Failed to fetch faculties',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        error: 'Không thể lấy danh sách khoa',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
       },
       { status: 500 }
     );
@@ -59,7 +65,7 @@ export async function GET() {
 
 /**
  * POST /api/faculties
- * Create a new faculty
+ * Tạo khoa mới qua PKG_KHOA.SP_THEM
  */
 export async function POST(request: NextRequest) {
   try {
@@ -73,45 +79,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Insert new faculty (MAKHOA will be auto-generated)
-    // Use DB_TYPE_NVARCHAR for Vietnamese text fields to ensure proper encoding
-    const result = await executeQuery(
-      `INSERT INTO KHOA (TENKHOA, DIACHI, MACHUNHIEMKHOA)
-       VALUES (:tenKhoa, :diaChi, :maChuNhiemKhoa)`,
+    // Gọi PKG_KHOA.SP_THEM để thêm khoa mới
+    const result = await executeProcedureFull(
+      'PKG_KHOA.SP_THEM',
       {
-        tenKhoa: { val: tenKhoa, type: oracledb.DB_TYPE_NVARCHAR },
-        diaChi: { val: diaChi || null, type: oracledb.DB_TYPE_NVARCHAR },
-        maChuNhiemKhoa: { val: maChuNhiemKhoa || null, type: oracledb.STRING }
+        p_tenkhoa: { val: tenKhoa, type: oracledb.DB_TYPE_NVARCHAR },
+        p_diachi: { val: diaChi || null, type: oracledb.DB_TYPE_NVARCHAR },
+        p_machunhiem: { val: maChuNhiemKhoa || null, type: oracledb.STRING },
+        p_makhoa_out: { dir: oracledb.BIND_OUT, type: oracledb.STRING, maxSize: 15 },
+        p_status: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+        p_message: { dir: oracledb.BIND_OUT, type: oracledb.DB_TYPE_NVARCHAR, maxSize: 500 }
       }
     );
 
-    // Get the auto-generated MAKHOA
-    const newFaculty = await executeQuery<{ MAKHOA: string }>(
-      `SELECT MAKHOA FROM KHOA WHERE ROWID = (SELECT MAX(ROWID) FROM KHOA)`,
-      {},
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    const { p_makhoa_out, p_status, p_message } = result.outBinds;
 
-    const generatedMaKhoa = newFaculty.rows?.[0]?.MAKHOA?.trim() || null;
+    if (p_status !== 1) {
+      return NextResponse.json(
+        { error: p_message || 'Không thể tạo khoa' },
+        { status: 400 }
+      );
+    }
 
     return NextResponse.json(
       {
-        message: 'Tạo khoa thành công',
-        maKhoa: generatedMaKhoa,
-        rowsAffected: result.rowsAffected
+        message: p_message || 'Tạo khoa thành công',
+        maKhoa: p_makhoa_out?.trim()
       },
       { status: 201 }
     );
   } catch (error) {
     console.error('Error creating faculty:', error);
-
-    if (error instanceof Error && error.message.includes('ORA-00001')) {
-      return NextResponse.json(
-        { error: 'Mã khoa đã tồn tại' },
-        { status: 409 }
-      );
-    }
-
     return NextResponse.json(
       {
         error: 'Không thể tạo khoa',

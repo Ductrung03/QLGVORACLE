@@ -1,210 +1,252 @@
+/**
+ * API Routes for Degree Management (Quản lý Học vị)
+ * Sử dụng connection pool từ lib/oracle.ts
+ *
+ * GET /api/degrees/hocvi: Lấy danh sách học vị
+ * POST /api/degrees/hocvi: Tạo học vị mới
+ * PUT /api/degrees/hocvi: Cập nhật học vị
+ * DELETE /api/degrees/hocvi?id=xxx: Xóa học vị
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
+import { executeQuery } from '@/lib/oracle';
 import oracledb from 'oracledb';
 
-const dbConfig = {
-  user: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
-  connectString: `${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_SERVICE_NAME}`
-};
+interface HocVi {
+  MAHOCVI: string;
+  TENHOCVI: string;
+  NGAYNHAN: Date | null;
+  MAGV: string | null;
+}
 
-// GET - Lấy danh sách học vị
-export async function GET() {
-  let connection;
-
+/**
+ * GET /api/degrees/hocvi
+ * Lấy danh sách học vị (distinct theo tên)
+ */
+export async function GET(request: NextRequest) {
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    const { searchParams } = new URL(request.url);
+    const maGV = searchParams.get('maGV');
 
-    const result = await connection.execute(
-      `SELECT MAHOCVI, TENHOCVI, MOTA
-       FROM HOCVI
-       ORDER BY MAHOCVI`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    let sql: string;
+    const binds: Record<string, any> = {};
 
-    const hocvi = (result.rows as any[]).map((row: any) => ({
-      maHocVi: row.MAHOCVI,
-      tenHocVi: row.TENHOCVI,
-      moTa: row.MOTA
+    if (maGV) {
+      // Lấy học vị của một GV cụ thể
+      sql = `SELECT MAHOCVI, TENHOCVI, NGAYNHAN, MAGV
+             FROM HOCVI
+             WHERE TRIM(MAGV) = TRIM(:maGV)
+             ORDER BY NGAYNHAN DESC`;
+      binds.maGV = maGV;
+    } else {
+      // Lấy tất cả học vị distinct
+      sql = `SELECT DISTINCT MAHOCVI, TENHOCVI
+             FROM HOCVI
+             ORDER BY TENHOCVI`;
+    }
+
+    const result = await executeQuery<HocVi>(sql, binds, {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+      fetchInfo: {
+        "TENHOCVI": { type: oracledb.STRING }
+      }
+    });
+
+    const hocvi = (result.rows || []).map((row) => ({
+      maHocVi: row.MAHOCVI?.trim(),
+      tenHocVi: row.TENHOCVI || '',
+      ngayNhan: row.NGAYNHAN || null,
+      maGV: row.MAGV?.trim() || ''
     }));
 
-    return NextResponse.json(hocvi);
-  } catch (error: any) {
-    console.error('Database error:', error);
+    return NextResponse.json(hocvi, { status: 200 });
+  } catch (error) {
+    console.error('Error fetching hocvi:', error);
     return NextResponse.json(
-      { message: 'Lỗi khi lấy danh sách học vị', error: error.message },
+      {
+        error: 'Không thể lấy danh sách học vị',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
+      },
       { status: 500 }
     );
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error('Error closing connection:', err);
-      }
-    }
   }
 }
 
-// POST - Thêm học vị mới
+/**
+ * POST /api/degrees/hocvi
+ * Tạo/Gán học vị cho GV
+ */
 export async function POST(request: NextRequest) {
-  let connection;
-
   try {
     const body = await request.json();
-    const { maHocVi, tenHocVi, moTa } = body;
+    const { maHocVi, tenHocVi, ngayNhan, maGV } = body;
 
     if (!maHocVi || !tenHocVi) {
       return NextResponse.json(
-        { message: 'Mã học vị và tên học vị là bắt buộc' },
+        { error: 'Mã học vị và tên học vị là bắt buộc' },
         { status: 400 }
       );
     }
 
-    connection = await oracledb.getConnection(dbConfig);
+    // Kiểm tra GV tồn tại nếu có
+    if (maGV) {
+      const checkGV = await executeQuery(
+        `SELECT COUNT(*) as CNT FROM GIAOVIEN WHERE TRIM(MAGV) = TRIM(:maGV)`,
+        { maGV },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
 
-    await connection.execute(
-      `INSERT INTO HOCVI (MAHOCVI, TENHOCVI, MOTA)
-       VALUES (:maHocVi, :tenHocVi, :moTa)`,
+      if ((checkGV.rows as any)?.[0]?.CNT === 0) {
+        return NextResponse.json(
+          { error: 'Giáo viên không tồn tại' },
+          { status: 400 }
+        );
+      }
+    }
+
+    await executeQuery(
+      `INSERT INTO HOCVI (MAHOCVI, TENHOCVI, NGAYNHAN, MAGV)
+       VALUES (:maHocVi, :tenHocVi, :ngayNhan, :maGV)`,
       {
-        maHocVi,
-        tenHocVi,
-        moTa: moTa || null
-      },
-      { autoCommit: true }
+        maHocVi: { val: maHocVi, type: oracledb.STRING },
+        tenHocVi: { val: tenHocVi, type: oracledb.DB_TYPE_NVARCHAR },
+        ngayNhan: { val: ngayNhan ? new Date(ngayNhan) : null, type: oracledb.DATE },
+        maGV: { val: maGV || null, type: oracledb.STRING }
+      }
     );
 
     return NextResponse.json(
-      { message: 'Thêm học vị thành công' },
+      {
+        message: 'Tạo học vị thành công',
+        maHocVi: maHocVi
+      },
       { status: 201 }
     );
-  } catch (error: any) {
-    console.error('Database error:', error);
-    if (error.errorNum === 1) {
+  } catch (error) {
+    console.error('Error creating hocvi:', error);
+
+    if (error instanceof Error && error.message.includes('ORA-00001')) {
       return NextResponse.json(
-        { message: 'Mã học vị đã tồn tại' },
+        { error: 'Mã học vị đã tồn tại' },
         { status: 409 }
       );
     }
+
     return NextResponse.json(
-      { message: 'Lỗi khi thêm học vị', error: error.message },
+      {
+        error: 'Không thể tạo học vị',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
+      },
       { status: 500 }
     );
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error('Error closing connection:', err);
-      }
-    }
   }
 }
 
-// PUT - Cập nhật học vị
+/**
+ * PUT /api/degrees/hocvi
+ * Cập nhật học vị
+ */
 export async function PUT(request: NextRequest) {
-  let connection;
-
   try {
     const body = await request.json();
-    const { maHocVi, tenHocVi, moTa } = body;
+    const { maHocVi, tenHocVi, ngayNhan } = body;
 
     if (!maHocVi || !tenHocVi) {
       return NextResponse.json(
-        { message: 'Mã học vị và tên học vị là bắt buộc' },
+        { error: 'Mã học vị và tên học vị là bắt buộc' },
         { status: 400 }
       );
     }
 
-    connection = await oracledb.getConnection(dbConfig);
-
-    const result = await connection.execute(
+    const result = await executeQuery(
       `UPDATE HOCVI
-       SET TENHOCVI = :tenHocVi, MOTA = :moTa
-       WHERE MAHOCVI = :maHocVi`,
+       SET TENHOCVI = :tenHocVi,
+           NGAYNHAN = :ngayNhan
+       WHERE TRIM(MAHOCVI) = TRIM(:maHocVi)`,
       {
-        tenHocVi,
-        moTa: moTa || null,
-        maHocVi
-      },
-      { autoCommit: true }
+        maHocVi: { val: maHocVi, type: oracledb.STRING },
+        tenHocVi: { val: tenHocVi, type: oracledb.DB_TYPE_NVARCHAR },
+        ngayNhan: { val: ngayNhan ? new Date(ngayNhan) : null, type: oracledb.DATE }
+      }
     );
 
     if (result.rowsAffected === 0) {
       return NextResponse.json(
-        { message: 'Không tìm thấy học vị' },
+        { error: 'Không tìm thấy học vị' },
         { status: 404 }
       );
     }
 
-    return NextResponse.json({ message: 'Cập nhật học vị thành công' });
-  } catch (error: any) {
-    console.error('Database error:', error);
     return NextResponse.json(
-      { message: 'Lỗi khi cập nhật học vị', error: error.message },
+      {
+        message: 'Cập nhật học vị thành công',
+        maHocVi: maHocVi
+      },
+      { status: 200 }
+    );
+  } catch (error) {
+    console.error('Error updating hocvi:', error);
+    return NextResponse.json(
+      {
+        error: 'Không thể cập nhật học vị',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
+      },
       { status: 500 }
     );
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error('Error closing connection:', err);
-      }
-    }
   }
 }
 
-// DELETE - Xóa học vị
+/**
+ * DELETE /api/degrees/hocvi?id=xxx
+ * Xóa học vị
+ */
 export async function DELETE(request: NextRequest) {
-  let connection;
-
   try {
     const url = new URL(request.url);
     const maHocVi = url.searchParams.get('id');
 
     if (!maHocVi) {
       return NextResponse.json(
-        { message: 'Mã học vị là bắt buộc' },
+        { error: 'Mã học vị là bắt buộc' },
         { status: 400 }
       );
     }
 
-    connection = await oracledb.getConnection(dbConfig);
-
-    const result = await connection.execute(
-      `DELETE FROM HOCVI WHERE MAHOCVI = :maHocVi`,
-      { maHocVi },
-      { autoCommit: true }
+    const result = await executeQuery(
+      `DELETE FROM HOCVI WHERE TRIM(MAHOCVI) = TRIM(:maHocVi)`,
+      { maHocVi }
     );
 
     if (result.rowsAffected === 0) {
       return NextResponse.json(
-        { message: 'Không tìm thấy học vị' },
+        { error: 'Không tìm thấy học vị' },
         { status: 404 }
       );
     }
 
-    return NextResponse.json({ message: 'Xóa học vị thành công' });
-  } catch (error: any) {
-    console.error('Database error:', error);
-    if (error.errorNum === 2292) {
+    return NextResponse.json(
+      {
+        message: 'Xóa học vị thành công',
+        maHocVi: maHocVi
+      },
+      { status: 200 }
+    );
+  } catch (error) {
+    console.error('Error deleting hocvi:', error);
+
+    if (error instanceof Error && error.message.includes('ORA-02292')) {
       return NextResponse.json(
-        { message: 'Không thể xóa học vị đang được sử dụng' },
+        { error: 'Không thể xóa học vị đang được sử dụng' },
         { status: 409 }
       );
     }
+
     return NextResponse.json(
-      { message: 'Lỗi khi xóa học vị', error: error.message },
+      {
+        error: 'Không thể xóa học vị',
+        message: error instanceof Error ? error.message : 'Lỗi không xác định'
+      },
       { status: 500 }
     );
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error('Error closing connection:', err);
-      }
-    }
   }
 }
